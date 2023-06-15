@@ -1,107 +1,50 @@
-﻿using System.Net;
-using System.Text.RegularExpressions;
-using AngleSharp;
+﻿using System.Globalization;
+using System.Text;
+using CsvHelper;
+using CsvHelper.Configuration;
 using TaskNotissimusParse;
 
-var cookieContainer = new CookieContainer();
-cookieContainer.Add(new Uri("https://www.toy.ru"), new Cookie("BITRIX_SM_city", "61000001000"));
 
-using var httpClient = GetHttpClient(cookieContainer);
-httpClient.Timeout = TimeSpan.FromSeconds(50);
-
-var productsFromSaintPetersburg = await ParseProducts(httpClient);
-
-foreach (var product in productsFromSaintPetersburg)
+try
 {
-    Console.WriteLine($"{product.Name}, {product.Price}, {product.OldPrice}, {product.Available}, {product.Region} {string.Join(">", product.Breadcrumbs)}");
-}
+    var userChatter = new UserChatter(Console.WriteLine, Console.ReadLine);
+    var useDefaultSettings =
+        userChatter.GetAnswerFromUser("Использовать стандартные настройки для парсинга? (y/n): ",
+            str => str is "y" or "n") == "y";
+    var parseRostov =
+        userChatter.GetAnswerFromUser(
+            "Парсить данные по Ростову? Внимание, в случае утвердительного ответа, парсинг займет 1-2 часа времени. (y/n): ",
+            str => str is "y" or "n") == "y";
 
-static async Task<IEnumerable<Product>> ParseProducts(HttpClient httpClient)
-{
-    var config = Configuration.Default.WithDefaultLoader().WithCulture("ru-ru");
-    var context = BrowsingContext.New(config);
-    var html = await httpClient.GetStringAsync("https://www.toy.ru/catalog/boy_transport/");
-    var document = await context.OpenAsync(req => req.Header("Content-Type", "text/html; charset=utf-8").Content(html));
+    using var toyRuParserBuilder = new ToyRuParserBuilder(useDefaultSettings, userChatter);
+    var toyRuParserBuilderDirector = new ToyRuParserBuilderDirector(toyRuParserBuilder);
+    toyRuParserBuilderDirector.Build(AvailableParsingRegionsEnum.SaintPetersburg);
 
-    var maxPageSelector = "ul.pagination.justify-content-between li:nth-last-child(2) a";
-    var maxPageElement = document.QuerySelector(maxPageSelector);
-    var maxPageValue = maxPageElement == null ? 1 : int.Parse(maxPageElement.TextContent);
+    var toyRuParserService = toyRuParserBuilder.Build();
 
-    var catalogURIs = new List<string>();
-    for (int i = 1; i <= maxPageValue; i++)
     {
-        catalogURIs.Add($"https://www.toy.ru/catalog/boy_transport/?filterseccode%5B0%5D=transport&PAGEN_5={i}");
+        using var streamWriter = new StreamWriter(new FileStream("data.csv", FileMode.Create), Encoding.UTF8);
+        using var csvWriter = new CsvWriter(streamWriter, CultureInfo.CurrentCulture);
+
+        var productsSpb = await toyRuParserService.ParseProductsAsync(toyRuParserBuilder.HttpClient);
+        await csvWriter.WriteRecordsAsync(productsSpb.productAsyncEnumerable);
+        await await productsSpb.taskAsyncEnumerable;
     }
 
-    var downloader = new HtmlDownloader(httpClient);
-
-    var catalogParser = new CatalogParser(downloader, context);
-    var productURIs = await catalogParser.ParseAsync(catalogURIs.ToArray());
-
-    var productParser = new ProductParser(downloader, context);
-    return await productParser.ParseAsync(productURIs.ToArray());
-}
-
-static HttpClient GetHttpClient(CookieContainer cookieContainer)
-{
-    var useProxy = GetAnswerFromUser("Использовать прокси? (y/n): ", Console.ReadKey, info => info.KeyChar is 'y' or 'n').KeyChar == 'y';
-
-    if (useProxy)
+    if (parseRostov)
     {
-        var validIpAddressPortRegex = @"^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5]):[\d]+$";
-        var uriForProxy = new Uri("http://" + GetAnswerFromUser("Введите Uri прокси ({Ip Address}:{Port}): ", Console.ReadLine, str => Regex.IsMatch(str, validIpAddressPortRegex)));
-        var proxy = new WebProxy
-        {
-            Address = uriForProxy,
-            BypassProxyOnLocal = false,
-            UseDefaultCredentials = false,
-        };
+        toyRuParserBuilder.ChangeParsingRegion(AvailableParsingRegionsEnum.Rostov);
+        toyRuParserService = toyRuParserBuilder.Build();
 
-        var useAuthenticatedProxy = GetAnswerFromUser("Использовать аутентифицированный прокси? (y/n): ", Console.ReadKey, info => info.KeyChar is 'y' or 'n').KeyChar == 'y';
+        using var streamWriter = new StreamWriter(new FileStream("data.csv", FileMode.Append), Encoding.UTF8);
+        using var csvWriter = new CsvWriter(streamWriter, new CsvConfiguration(CultureInfo.CurrentCulture) { HasHeaderRecord = false });
 
-        if (useAuthenticatedProxy)
-        {
-            var proxyUserName = GetAnswerFromUser("Введите имя пользователя прокси: ", Console.ReadLine, str => !string.IsNullOrEmpty(str));
-            var proxyPassword = GetAnswerFromUser("Введите пароль пользователя прокси: ", Console.ReadLine, str => !string.IsNullOrEmpty(str));
-
-            proxy.Credentials = new NetworkCredential(proxyUserName, proxyPassword);
-        }
-
-        var httpClientHandler = new HttpClientHandler
-        {
-            Proxy = proxy,
-            ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator,
-            CookieContainer = cookieContainer,
-        };
-
-        return new HttpClient(handler: httpClientHandler, disposeHandler: true);
-    }
-    else
-    {
-        var httpClientHandler = new HttpClientHandler
-        {
-            CookieContainer = cookieContainer,
-        };
-
-        return new HttpClient(handler: httpClientHandler, disposeHandler: true);
+        var productsRostov = await toyRuParserService.ParseProductsAsync(toyRuParserBuilder.HttpClient);
+        await csvWriter.WriteRecordsAsync(productsRostov.productAsyncEnumerable);
+        await await productsRostov.taskAsyncEnumerable;
     }
 }
-
-static T GetAnswerFromUser<T>(string question, Func<T> answerHandler, Predicate<T>? checkAnswerPredicate = null)
+catch (Exception ex)
 {
-    while (true)
-    {
-        Console.WriteLine(question);
-        var answer = answerHandler();
-        Console.WriteLine();
-
-        if (checkAnswerPredicate != null && checkAnswerPredicate(answer))
-        {
-            return answer;
-        }
-        else
-        {
-            Console.WriteLine("Ошибка ввода. Повторите ввод.");
-        }
-    }
+    Console.WriteLine($"Ошибка - {ex.Message}");
 }

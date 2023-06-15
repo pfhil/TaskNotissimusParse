@@ -8,6 +8,11 @@ namespace TaskNotissimusParse
 {
     public interface IParser<T>
     {
-        Task<T> ParseAsync(params string[] urls);
+        Task<T> ParseAsync(string html, RequestMetadata? metadata = null);
+    }
+
+    public class RequestMetadata
+    {
+        public Uri Uri { get; init; }
     }
 }

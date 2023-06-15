@@ -8,77 +8,71 @@ using AngleSharp.Dom;
 
 namespace TaskNotissimusParse
 {
-    public class ProductParser : IParser<IEnumerable<Product>>
+    public class ProductParser : IParser<Product>
     {
-        private readonly IHtmlDownloader _downloader;
         private readonly IBrowsingContext _context;
 
-        public ProductParser(IHtmlDownloader downloader, IBrowsingContext context)
+        public ProductParser(IBrowsingContext context)
         {
-            _downloader = downloader;
             _context = context;
         }
 
-        public async Task<IEnumerable<Product>> ParseAsync(params string[] urls)
-        {
-            //Уже загруженные страницы начинают парсится пока загружаются другие
-            //Локер в HtmlDownloader гарантирует одновременную загрузку только одной страницы
-            var tasks = urls.Select(async url =>
-            {
-                var html = _downloader.DownloadAsync(url);
-                return await ParseHtmlAsync(html, url);
-            });
-
-            var results = await Task.WhenAll(tasks);
-
-            return results;
-        }
-        private async Task<Product> ParseHtmlAsync(string html, string url)
+        public async Task<Product> ParseAsync(string html, RequestMetadata? metadata)
         {
             var document = await _context.OpenAsync(req => req.Header("Content-Type", "text/html; charset=utf-8").Content(html));
 
-            var nameSelector = "h1.detail-name";
-            var priceSelector = "span.price";
-            var oldPriceSelector = "span.old-price";
-            var breadcrumbsSelector = "nav.breadcrumb span > span, a.breadcrumb-item + span";
-            var availableOkSelector = "span.ok";
-            var availableNotSelector = "div.net-v-nalichii";
-            var imageSelector = ".detail-image img";
-            var regionSelector = "div.select-city-link [data-src=\"#region\"]";
-
-
-            var name = document.QuerySelector(nameSelector)?.TextContent.Trim();
-
-            var priceElement = document.QuerySelector(priceSelector);
-            decimal? price = priceElement == null ? null : Convert.ToDecimal(new string(priceElement.TextContent.Where(char.IsDigit).ToArray()));
-
-            var oldPriceElement = document.QuerySelector(oldPriceSelector);
-            decimal? oldPrice = oldPriceElement == null ? null : oldPriceElement.TextContent.Trim() == "" ? null : Convert.ToDecimal(new string(oldPriceElement.TextContent.Where(char.IsDigit).ToArray()));
-
-            var breadcrumbsElement = document.QuerySelectorAll(breadcrumbsSelector);
-            var breadcrumbs = breadcrumbsElement == null ? null : breadcrumbsElement.Select(el => el.TextContent.Trim());
-
-            var availableOkElement = document.QuerySelector(availableOkSelector);
-            var availableNotElement = document.QuerySelector(availableNotSelector);
-
-            //Если оба элемента равны null, то available равен null
-            bool? available = availableOkElement != null ? true : availableNotElement != null ? false : null;
-
-            string? imageLink = document.QuerySelector(imageSelector)?.GetAttribute("src");
-
-            var region = document.QuerySelector(regionSelector)?.TextContent.Trim();
-
-            return new Product
+            //Сомнительное решение (асинхронно запускать сбор информации по картрочке товара), но это требование есть в пунке задания под №3
+            //Это имело бы смысл, если бы программа парсила страницы, когда все они были бы загружены и тогда парсинг можно было бы проводить в нескольких потоках одновременно
+            
+            //Но в моей реализации парсинг происходит по мере загрузки страниц, в этом есть несколько плюсов:
+            // 1)Можно уже начинать парсинг загруженных страниц, когда когда программа ждет загрузки других страниц
+            // 2)Не требуется держать в памяти всю коллекцию html страниц перед их парсингом 
+            return await Task.Run(() =>
             {
-                Name = name,
-                Price = price,
-                OldPrice = oldPrice,
-                Breadcrumbs = breadcrumbs,
-                Available = available,
-                LinkOnImage = imageLink,
-                Region = region,
-                Link = url
-            };
+                var nameSelector = "h1.detail-name";
+                var priceSelector = "span.price";
+                var oldPriceSelector = "span.old-price";
+                var breadcrumbsSelector = "nav.breadcrumb span > span, a.breadcrumb-item + span";
+                var availableOkSelector = "span.ok";
+                var availableNotSelector = "div.net-v-nalichii";
+                var imagesSelector = "div.detail-image img";
+                var regionSelector = "div.select-city-link [data-src=\"#region\"]";
+
+
+                var name = document.QuerySelector(nameSelector)?.TextContent.Trim();
+
+                var priceElement = document.QuerySelector(priceSelector);
+                decimal? price = priceElement == null ? null : Convert.ToDecimal(new string(priceElement.TextContent.Trim().SkipLast(5).ToArray()));
+
+                var oldPriceElement = document.QuerySelector(oldPriceSelector);
+                decimal? oldPrice = oldPriceElement == null ? null : oldPriceElement.TextContent.Trim() == "" ? null : Convert.ToDecimal(new string(oldPriceElement.TextContent.Trim().SkipLast(5).ToArray()));
+
+                var breadcrumbsElement = document.QuerySelectorAll(breadcrumbsSelector);
+                var breadcrumbs = breadcrumbsElement == null ? null : string.Join('>', breadcrumbsElement.Select(el => el.TextContent.Trim()));
+
+                var availableOkElement = document.QuerySelector(availableOkSelector);
+                var availableNotElement = document.QuerySelector(availableNotSelector);
+
+                //Если оба элемента равны null, то available равен null
+                bool? available = availableOkElement != null ? true : availableNotElement != null ? false : null;
+
+                var imageLinksElement = document.QuerySelectorAll(imagesSelector);
+                string? imageLink = imageLinksElement == null ? null : string.Join(' ', imageLinksElement.Select(img => img.GetAttribute("src")));
+
+                var region = document.QuerySelector(regionSelector)?.TextContent.Trim();
+
+                return new Product
+                {
+                    Name = name,
+                    Price = price,
+                    OldPrice = oldPrice,
+                    Breadcrumbs = breadcrumbs,
+                    Available = available,
+                    LinkOnImage = imageLink,
+                    Region = region,
+                    Link = metadata?.Uri.ToString(),
+                };
+            });
         }
     }
 }

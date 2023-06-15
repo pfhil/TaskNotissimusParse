@@ -2,6 +2,7 @@
 {
     public interface IHtmlDownloader
     {
-        Task<string> DownloadAsync(string urls);
+        public HttpClient HttpClient { get; set; }
+        Task<string> DownloadAsync(string url);
     }
 }
